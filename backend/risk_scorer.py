@@ -27,6 +27,8 @@ from sklearn.metrics import (
     precision_score, recall_score, f1_score, roc_auc_score,
     confusion_matrix, classification_report
 )
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+import matplotlib.pyplot as plt
 
 # --- Business cost assumptions (make these explicit and editable — this IS
 #     the "honest metrics including false-positive cost" requirement).
@@ -43,6 +45,7 @@ FEATURE_COLUMNS_NUMERIC = [
     "customer_account_age_days", "customer_past_orders", "customer_past_return_rate",
     "variants_in_order",  # bracketing behavior signal: 2+ = ordering multiple
                           # sizes/colors of the same item intending to return most
+    "delivery_address_change_count", # NEW: geo-hopper feature
 ]
 FEATURE_COLUMNS_CATEGORICAL = ["category", "payment_method"]
 
@@ -99,7 +102,10 @@ def evaluate_at_threshold(y_true, y_proba, threshold, n_total_orders,
     }
 
 
-def run(cost_fp=COST_FALSE_POSITIVE, cost_fn=COST_FALSE_NEGATIVE):
+def run(cost_fp=COST_FALSE_POSITIVE, cost_fn=COST_FALSE_NEGATIVE, thresholds=None):
+    if thresholds is None:
+        thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
+
     X_train, X_test, y_train, y_test, full_df = load_and_split("../data/orders.csv")
 
     pipeline = build_pipeline()
@@ -107,12 +113,18 @@ def run(cost_fp=COST_FALSE_POSITIVE, cost_fn=COST_FALSE_NEGATIVE):
 
     y_proba = pipeline.predict_proba(X_test)[:, 1]
     auc = roc_auc_score(y_test, y_proba)
+    
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring="roc_auc")
+    cv_mean = cv_scores.mean()
+    cv_std = cv_scores.std()
 
     print(f"Cost assumptions in use: false-positive=INR {cost_fp}, false-negative=INR {cost_fn}")
 
     print(f"Test set size: {len(y_test)} orders (held out, never seen during training)")
     print(f"Test set actual return rate: {y_test.mean():.1%}")
-    print(f"ROC-AUC: {auc:.3f}\n")
+    print(f"ROC-AUC: {auc:.3f}")
+    print(f"5-Fold CV ROC-AUC (Train set): {cv_mean:.3f} +/- {cv_std:.3f}\n")
 
     print("=" * 100)
     print(f"{'Threshold':>10} {'Precision':>10} {'Recall':>8} {'F1':>6} "
@@ -120,7 +132,7 @@ def run(cost_fp=COST_FALSE_POSITIVE, cost_fn=COST_FALSE_NEGATIVE):
     print("=" * 100)
 
     results = []
-    for threshold in [0.3, 0.4, 0.5, 0.6, 0.7]:
+    for threshold in thresholds:
         r = evaluate_at_threshold(y_test.values, y_proba, threshold, len(y_test),
                                    cost_fp=cost_fp, cost_fn=cost_fn)
         results.append(r)
@@ -150,7 +162,37 @@ def run(cost_fp=COST_FALSE_POSITIVE, cost_fn=COST_FALSE_NEGATIVE):
     pd.DataFrame(results).to_csv("threshold_evaluation.csv", index=False)
     print("\nFull threshold evaluation saved to: threshold_evaluation.csv")
 
-    return pipeline, results
+    # Save Plot
+    plt.figure(figsize=(8, 5))
+    thresh_vals = [r["threshold"] for r in results]
+    cost_vals = [r["total_cost_inr"] for r in results]
+    plt.plot(thresh_vals, cost_vals, marker='o', label="Total Cost (INR)")
+    plt.axvline(best["threshold"], color="r", linestyle="--", label="Best Threshold")
+    
+    # Annotate net savings
+    annotate_y = max(cost_vals) if best["total_cost_inr"] == min(cost_vals) else best["total_cost_inr"]
+    plt.annotate(f"Net Savings: {best['net_savings_inr']} INR", 
+                 xy=(best["threshold"], best["total_cost_inr"]),
+                 xytext=(best["threshold"], annotate_y + (max(cost_vals)-min(cost_vals))*0.1),
+                 arrowprops=dict(facecolor='black', shrink=0.05, width=1, headwidth=5))
+                 
+    plt.xlabel("Threshold")
+    plt.ylabel("Total Cost (INR)")
+    plt.title(f"Cost vs Threshold (FP={cost_fp}, FN={cost_fn})")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.savefig("cost_vs_threshold.png", bbox_inches="tight")
+    print("Saved cost vs threshold plot to cost_vs_threshold.png")
+
+    return {
+        "roc_auc": float(auc),
+        "cv_roc_auc_mean": float(cv_mean),
+        "cv_roc_auc_std": float(cv_std),
+        "threshold_results": results,
+        "feature_importances": [{"feature": name, "importance": float(imp)} for name, imp in importances[:8]],
+        "best_threshold": best["threshold"],
+        "net_savings_inr": best["net_savings_inr"]
+    }
 
 
 if __name__ == "__main__":
@@ -160,5 +202,9 @@ if __name__ == "__main__":
                          help="Cost (INR) of wrongly flagging a genuine order")
     parser.add_argument("--cost-fn", type=float, default=COST_FALSE_NEGATIVE,
                          help="Cost (INR) of missing an actual return")
+    parser.add_argument("--thresholds", type=str, default="0.3,0.4,0.5,0.6,0.7",
+                         help="Comma-separated list of thresholds to evaluate")
     args = parser.parse_args()
-    run(cost_fp=args.cost_fp, cost_fn=args.cost_fn)
+    
+    thresholds_list = [float(x.strip()) for x in args.thresholds.split(",")]
+    run(cost_fp=args.cost_fp, cost_fn=args.cost_fn, thresholds=thresholds_list)

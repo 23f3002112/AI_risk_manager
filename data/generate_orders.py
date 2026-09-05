@@ -42,6 +42,7 @@ def generate_customers(n_customers, rng):
         cust_id = f"CUST{1000+i}"
         is_serial_returner = rng.random() < 0.08
         is_bracketer = rng.random() < 0.06  # independent from serial-returner flag
+        is_high_risk_geo_hopper = rng.random() < 0.05  # NEW: hidden trait for address changes
         account_age_days = rng.randint(1, 900)
         past_orders = rng.randint(0, 40)
         past_return_rate = (
@@ -55,6 +56,7 @@ def generate_customers(n_customers, rng):
             "past_return_rate": past_return_rate,
             "is_serial_returner": is_serial_returner,  # hidden ground-truth signal
             "is_bracketer": is_bracketer,               # hidden ground-truth signal
+            "is_high_risk_geo_hopper": is_high_risk_geo_hopper, # hidden ground-truth signal
         })
     return customers
 
@@ -84,6 +86,15 @@ def generate_orders(n, seed, n_customers=600):
             # small baseline noise: even non-bracketers occasionally order 2 sizes
             variants_in_order = 2
 
+        # --- Delivery address change signal: a geo-hopper frequently changes
+        # their delivery address post-order creation (observable at order time) ---
+        delivery_address_change_count = 0
+        if cust["is_high_risk_geo_hopper"] and rng.random() < 0.8:
+            delivery_address_change_count = rng.randint(1, 3)
+        elif rng.random() < 0.02:
+            # small baseline noise: normal customers sometimes change address once or twice
+            delivery_address_change_count = rng.randint(1, 2)
+
         # --- Compute TRUE underlying return probability from real risk factors ---
         p = CATEGORY_RETURN_BASE[category]
 
@@ -93,6 +104,12 @@ def generate_orders(n, seed, n_customers=600):
             p += 0.35
         elif variants_in_order == 2:
             p += 0.18
+
+        # Geo-hoppers changing address frequently increases return and fraud risk
+        if delivery_address_change_count >= 2:
+            p += 0.25
+        elif delivery_address_change_count == 1:
+            p += 0.10
 
         # Serial returners massively increase risk
         p += cust["past_return_rate"] * 0.5
@@ -133,6 +150,7 @@ def generate_orders(n, seed, n_customers=600):
             "customer_past_orders": cust["past_orders"],
             "customer_past_return_rate": cust["past_return_rate"],
             "variants_in_order": variants_in_order,  # NEW: bracketing behavior feature
+            "delivery_address_change_count": delivery_address_change_count, # NEW: geo-hopper feature
             "returned": returned,  # LABEL
         })
 
@@ -172,3 +190,14 @@ if __name__ == "__main__":
         breakdown("category")
         breakdown("payment_method")
         breakdown("variants_in_order")
+        
+        # Breakdown with buckets for delivery_address_change_count
+        groups = {}
+        for r in rows:
+            val = r["delivery_address_change_count"]
+            bucket = "2+" if val >= 2 else str(val)
+            groups.setdefault(bucket, []).append(r["returned"])
+        print("\n--- Return rate by delivery_address_change_count ---")
+        for val, outcomes in sorted(groups.items(), key=lambda x: str(x[0])):
+            rate = sum(outcomes) / len(outcomes)
+            print(f"  {str(val):<20} n={len(outcomes):<6} return_rate={rate:.1%}")
