@@ -61,7 +61,7 @@ class RiskResponder:
         from collections import Counter
         return dict(Counter(e["action"] for e in self.audit_log))
 
-    def explain_action(self, order_id, order_features=None, feature_importances=None):
+    def explain_action(self, order_id, order_features=None, feature_importances=None, feature_percentiles=None):
         """
         Builds a per-order natural-language explanation: which of THIS order's
         specific feature values contributed most to its risk score, not just
@@ -73,6 +73,8 @@ class RiskResponder:
         feature_importances: dict of {feature_name: global_importance_weight}
             from the trained model (used to rank which of this order's
             features are most likely to be driving its score)
+        feature_percentiles: optional dict of {feature_name: function} where 
+            function(value) returns the percentile (0-100) of that value in training data.
         """
         entry = next((e for e in self.audit_log if e["order_id"] == order_id), None)
         if entry is None:
@@ -87,7 +89,21 @@ class RiskResponder:
             for feat_name, importance in ranked:
                 if feat_name in order_features:
                     val = order_features[feat_name]
-                    explanation_lines.append(f"{feat_name} = {val} (importance weight {importance:.2f})")
+                    
+                    context_str = ""
+                    if feature_percentiles and feat_name in feature_percentiles:
+                        try:
+                            perc = feature_percentiles[feat_name](val)
+                            if perc >= 90:
+                                context_str = f" (this is in the top {100 - int(perc)}% of all customers \u2014 a strong risk signal)"
+                            elif perc <= 10:
+                                context_str = f" (this is in the bottom {int(perc)}% of all customers \u2014 unusually low)"
+                            else:
+                                context_str = f" (this is near the {int(perc)}th percentile)"
+                        except Exception:
+                            pass
+                            
+                    explanation_lines.append(f"{feat_name} = {val}{context_str} (importance weight {importance:.2f})")
 
         return {
             "order_id": order_id,

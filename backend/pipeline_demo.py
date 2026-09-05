@@ -28,6 +28,12 @@ def run_pipeline():
     all_features = cat_features + FEATURE_COLUMNS_NUMERIC
     feature_importances = dict(zip(all_features, model.feature_importances_))
 
+    import scipy.stats
+    feature_percentiles = {}
+    for col in FEATURE_COLUMNS_NUMERIC:
+        train_vals = X_train[col].values
+        feature_percentiles[col] = lambda x, vals=train_vals: scipy.stats.percentileofscore(vals, x)
+
     order_feature_lookup = {}
     for idx, (order_idx, proba) in enumerate(zip(X_test.index, y_proba)):
         order_details = full_df.loc[order_idx, ["order_id", "category", "payment_method", "price"]].to_dict()
@@ -55,6 +61,7 @@ def run_pipeline():
             e["order_id"],
             order_features=order_feature_lookup[e["order_id"]],
             feature_importances=feature_importances,
+            feature_percentiles=feature_percentiles,
         )
         print(f"\n  Order: {explanation['order_id']} | Score: {explanation['risk_score']} | "
               f"Action: {explanation['action_taken']}")
