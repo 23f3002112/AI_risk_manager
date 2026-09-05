@@ -1,0 +1,11 @@
+# Python ignores
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+
+# Keep reference outputs tracked
+!data/orders.csv
+!backend/threshold_evaluation.csv
+!backend/risk_response_log.json
